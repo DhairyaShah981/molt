@@ -23,6 +23,7 @@ class Session:
     bash_commands: list[str] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
     n_messages: int = 0
+    started: str = ""  # ISO timestamp of first message, "" if unknown
 
     @property
     def haystack(self) -> str:
@@ -61,6 +62,8 @@ def load_session(path: Path, max_bytes: int = 50_000_000) -> Session | None:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not s.started and isinstance(d.get("timestamp"), str):
+                    s.started = d["timestamp"]
                 t = d.get("type")
                 if t not in ("user", "assistant"):
                     continue
@@ -83,6 +86,24 @@ def load_session(path: Path, max_bytes: int = 50_000_000) -> Session | None:
     s.user_text = "\n".join(texts_user)
     s.assistant_text = "\n".join(texts_asst)
     return s
+
+
+def filter_by_date(sessions: list[Session], since: str = "", until: str = "") -> list[Session]:
+    """Keep sessions whose first timestamp falls in [since, until). Dates are
+    ISO strings so plain lexical comparison works ('2026-06-20T…' >= '2026-03-01').
+    Sessions with unknown start are dropped when any bound is set."""
+    if not since and not until:
+        return sessions
+    out = []
+    for s in sessions:
+        if not s.started:
+            continue
+        if since and s.started < since:
+            continue
+        if until and s.started >= until:
+            continue
+        out.append(s)
+    return out
 
 
 def load_project(project_dir: Path, limit: int = 0) -> list[Session]:

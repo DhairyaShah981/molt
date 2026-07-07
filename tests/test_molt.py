@@ -60,6 +60,14 @@ def test_project_slug():
     assert project_slug(Path("/Users/me/my.app")) == "-Users-me-my-app"
 
 
+def test_n_pluralizer():
+    from molt.report import _n
+
+    assert _n(1, "rule") == "1 rule"
+    assert _n(0, "rule") == "0 rules"
+    assert _n(2, "real session") == "2 real sessions"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

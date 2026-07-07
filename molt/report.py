@@ -1,10 +1,38 @@
-"""Render an audit into a human-readable markdown report."""
+"""Render an audit into a human-readable markdown report, or machine JSON."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .evidence import DEAD, Evidence, IGNORED, LOAD_BEARING, UNCERTAIN, summarize
+
+
+def _n(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def to_json(evidences: list[Evidence], sessions_count: int, file_tokens: int = 0) -> str:
+    return json.dumps(
+        {
+            "meta": {"molt_report": 1, "sessions": sessions_count, "file_tokens": file_tokens},
+            "rules": [
+                {
+                    "id": e.rule.id,
+                    "text": e.rule.text,
+                    "file": e.rule.file,
+                    "line": e.rule.line,
+                    "tokens": e.rule.tokens,
+                    "polarity": e.rule.polarity,
+                    "verdict": e.verdict,
+                    "text_hits": e.text_hits,
+                    "action_hits": e.action_hits,
+                }
+                for e in evidences
+            ],
+        },
+        indent=2,
+    )
 
 EMOJI = {DEAD: "💀", IGNORED: "🙈", LOAD_BEARING: "🏗️", UNCERTAIN: "❓"}
 ORDER = [DEAD, IGNORED, UNCERTAIN, LOAD_BEARING]
@@ -24,12 +52,12 @@ def render(evidences: list[Evidence], sessions_count: int, file_tokens: int = 0)
     lines.append("")
     cost = f" Your scaffold files cost ~{file_tokens} tokens every session." if file_tokens else ""
     lines.append(
-        f"Audited **{s['rules']} rules** (~{s['tokens']} tokens of auditable rules) "
-        f"against **{sessions_count} real sessions**.{cost}"
+        f"Audited **{_n(s['rules'], 'rule')}** (~{s['tokens']} tokens of auditable rules) "
+        f"against **{_n(sessions_count, 'real session')}**.{cost}"
     )
     lines.append("")
     lines.append(
-        f"**Prunable: {s['prunable_rules']} rules (~{s['prunable_tokens']} tokens, "
+        f"**Prunable: {_n(s['prunable_rules'], 'rule')} (~{s['prunable_tokens']} tokens, "
         f"{(100 * s['prunable_tokens'] // max(1, s['tokens']))}% of your scaffold).**"
     )
     lines.append("")
@@ -50,8 +78,9 @@ def render(evidences: list[Evidence], sessions_count: int, file_tokens: int = 0)
         lines.append("|---|---|---|---|---|")
         for e in sorted(group, key=lambda e: -e.rule.tokens):
             src = f"{Path(e.rule.file).name}:{e.rule.line}"
+            cell = e.rule.short().replace("|", "\\|")
             lines.append(
-                f"| {e.rule.short()} | {src} | {e.rule.tokens} | "
+                f"| {cell} | {src} | {e.rule.tokens} | "
                 f"{e.text_hits}/{e.sessions_total} | {e.action_hits}/{e.sessions_total} |"
             )
         lines.append("")
