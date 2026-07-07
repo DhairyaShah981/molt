@@ -93,11 +93,13 @@ def main() -> int:
         failed += 1
 
     print()
-    failed += eval_diff()
+    diff_failed = eval_diff()
 
     total = passed + failed
-    print(f"\nclassifier: {passed}/{total} · diff contract: {'PASS' if failed == 0 else 'FAIL'}")
-    return 0 if failed == 0 else 1
+    print(
+        f"\nclassifier: {passed}/{total} · diff contract: {'PASS' if diff_failed == 0 else 'FAIL'}"
+    )
+    return 0 if failed == 0 and diff_failed == 0 else 1
 
 
 if __name__ == "__main__":
