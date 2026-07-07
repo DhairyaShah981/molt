@@ -23,6 +23,23 @@
 - Rules spanning wrapped bullet lines now carry their full line range
   (`end_line`), so ablation strips the whole rule, not just its first line.
 
+### Hardened (pre-ship adversarial review findings)
+- `molt ablate` refuses the global `~/.claude/CLAUDE.md` — `claude -p` loads it
+  in both trial arms, which would make every verdict read NO_EFFECT.
+- Ablation parses only the target file (no `@import` following), so imported
+  rules can't be stripped with wrong line numbers.
+- Agent-invocation failures are a third trial state (errored): excluded from
+  pass rates, counted per rule, and flagged in the report.
+- `--since`/`--until` disable the session load limit so old eras aren't
+  silently starved out of capability diffs; malformed dates are rejected;
+  sessions without timestamps are reported when dropped.
+- Tasks files are validated (non-empty list of `{prompt, check}`) with real
+  errors instead of a stripable `assert`; runs >100 require `--yes`.
+- `molt diff` validates its inputs and reports carry a `molt_report` schema
+  marker; rule text is pipe-escaped in all markdown tables.
+- Sandbox trials pass `--permission-mode acceptEdits` so file-writing tasks
+  actually run non-interactively.
+
 ## 0.1.0 — 2026-07-07
 
 Initial release: `molt scan`, `molt audit` (DEAD / IGNORED / UNCERTAIN /

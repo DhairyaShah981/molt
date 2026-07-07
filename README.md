@@ -55,13 +55,21 @@ dir, task's `check` shell command decides pass/fail):
 cat > tasks.json <<'EOF'
 [{"prompt": "create a hello-world python script and test it", "check": "test -f hello.py && python hello.py"}]
 EOF
-molt ablate ~/.claude/CLAUDE.md --tasks tasks.json --rule "uv pip" --trials 5
+molt ablate ./CLAUDE.md --tasks tasks.json --rule "uv pip" --trials 5
 ```
 
 Verdicts: `CARRIES_WEIGHT` (pass rate drops without the rule — keep),
 `NO_EFFECT` (safe to delete), `HARMFUL` (pass rate *rises* without it — delete
-fast). Ablate the few rules the audit marked UNCERTAIN, not all fifty — that's
-the economics the observational pass buys you.
+fast). Trials where the agent invocation itself fails are counted as **errors**,
+excluded from both rates, and flagged in the report — infrastructure noise never
+masquerades as a verdict. Ablate the few rules the audit marked UNCERTAIN, not
+all fifty — that's the economics the observational pass buys you.
+
+Two guardrails to know about: molt refuses to ablate the **global**
+`~/.claude/CLAUDE.md` (Claude loads it in *both* trial arms, so every verdict
+would read NO_EFFECT — copy rules into a project CLAUDE.md instead), and each
+task's `check` is a shell command executed with your full privileges — only run
+tasks.json files you wrote or read.
 
 ### Capability diff (v3)
 
