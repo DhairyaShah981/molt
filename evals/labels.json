@@ -1,0 +1,10 @@
+{
+  "_comment": "Ground truth: key = unique substring of the rule text, value = expected verdict.",
+  "pip install": "IGNORED",
+  "pytest -q": "LOAD_BEARING",
+  "instead of `grep`": "LOAD_BEARING",
+  "netlify deploy": "DEAD",
+  ".env": "DEAD",
+  "docker compose": "IGNORED",
+  "CHANGELOG.md": "UNCERTAIN"
+}

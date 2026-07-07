@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"How should I run the app locally, and log the new feature"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Run docker compose up -d for local development. Logging the feature now."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo 'added retry feature' >> CHANGELOG.md"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":""}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"CHANGELOG.md updated."}]}}

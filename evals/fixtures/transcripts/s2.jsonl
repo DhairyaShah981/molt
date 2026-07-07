@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"Search for TODO comments and run the tests"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Searching and running tests. Don't forget CHANGELOG.md needs an entry."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"rg TODO src/"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"src/client.py:14: # TODO retry logic"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pytest -q"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"12 passed in 1.02s"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"One TODO found, all 12 tests pass."}]}}

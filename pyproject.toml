@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "molt-audit"
+version = "0.1.0"
+description = "Scaffold-debt auditor: evidence-based pruning for agent instruction files (CLAUDE.md and friends)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Dhairya Shah" }]
+requires-python = ">=3.9"
+keywords = ["agents", "claude-code", "harness", "context-engineering", "audit"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/DhairyaShah981/molt"
+
+[project.scripts]
+molt = "molt.cli:main"
+
+[tool.setuptools]
+packages = ["molt"]
