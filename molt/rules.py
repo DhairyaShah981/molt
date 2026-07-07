@@ -33,10 +33,15 @@ class Rule:
     text: str
     file: str
     line: int
+    end_line: int = 0  # inclusive; 0 means same as line
     heading: str = ""
     tokens: int = 0
     polarity: str = "info"  # prohibition | mandate | info
     signals: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.end_line:
+            self.end_line = self.line
 
     def short(self, width: int = 72) -> str:
         t = " ".join(self.text.split())
@@ -109,6 +114,7 @@ def parse_file(path: Path) -> list[Rule]:
     in_fence = False
     pending: list[str] = []  # continuation lines of the current bullet
     pending_line = 0
+    pending_end = 0
 
     def flush() -> None:
         nonlocal pending
@@ -122,6 +128,7 @@ def parse_file(path: Path) -> list[Rule]:
                     text=text,
                     file=str(path),
                     line=pending_line,
+                    end_line=pending_end,
                     heading=heading,
                     tokens=_estimate_tokens(text),
                     polarity=_polarity(text),
@@ -153,9 +160,10 @@ def parse_file(path: Path) -> list[Rule]:
         if m:
             flush()
             pending = [m.group(1)]
-            pending_line = i
+            pending_line = pending_end = i
         elif pending and line.strip() and (raw.startswith((" ", "\t"))):
             pending.append(line.strip())
+            pending_end = i
         else:
             flush()
             text = line.strip()

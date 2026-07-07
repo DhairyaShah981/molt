@@ -2,4 +2,4 @@
 scaffolding; molt tells you which parts are safe to delete, with evidence
 mined from your real session transcripts."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

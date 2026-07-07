@@ -45,6 +45,36 @@ molt audit --out report.md
 
 By default molt auto-discovers `~/.claude/CLAUDE.md` and `./CLAUDE.md` (following `@import` lines), and reads transcripts from `~/.claude/projects/`. Point it elsewhere with explicit file args and `--transcripts DIR`.
 
+### Targeted ablation (v2)
+
+The audit is observational — for causal proof, ablate. Give molt a small task
+suite and it A/Bs each rule with real agent runs (`claude -p` in a sandbox
+dir, task's `check` shell command decides pass/fail):
+
+```bash
+cat > tasks.json <<'EOF'
+[{"prompt": "create a hello-world python script and test it", "check": "test -f hello.py && python hello.py"}]
+EOF
+molt ablate ~/.claude/CLAUDE.md --tasks tasks.json --rule "uv pip" --trials 5
+```
+
+Verdicts: `CARRIES_WEIGHT` (pass rate drops without the rule — keep),
+`NO_EFFECT` (safe to delete), `HARMFUL` (pass rate *rises* without it — delete
+fast). Ablate the few rules the audit marked UNCERTAIN, not all fifty — that's
+the economics the observational pass buys you.
+
+### Capability diff (v3)
+
+Same scaffold, two transcript eras (old model vs new model), diffed verdicts.
+Rules that were LOAD_BEARING and became DEAD are your capability changelog —
+scaffolding the new model no longer needs:
+
+```bash
+molt audit --until 2026-06-01 --json --out old.json   # era: before the model upgrade
+molt audit --since 2026-06-01 --json --out new.json   # era: after
+molt diff old.json new.json
+```
+
 ## How verdicts work
 
 Each rule gets signals (backticked commands/tools beat prose keywords) and is matched — word-boundary safe — against three surfaces per session: user text, assistant text, and *actions* (bash commands + tool calls).
@@ -77,8 +107,10 @@ CI runs both on every push. If you find a transcript pattern molt misclassifies,
 
 ## Roadmap
 
-- **v2 — targeted ablation:** run a small A/B task suite with individual UNCERTAIN rules removed. Ablate five rules with real budget instead of fifty with none.
-- **v3 — capability diff:** rerun audits across model releases and publish what the new model made obsolete. A changelog of intelligence, expressed as deleted scaffold.
+- ~~v2 — targeted ablation~~ shipped (`molt ablate`)
+- ~~v3 — capability diff~~ shipped (`molt audit --json` + `molt diff`)
+- **v4 — auto-prune PRs:** `molt prune` opens a PR deleting DEAD rules with the evidence in the PR body.
+- **v5 — public capability diffs:** community-run diffs published on each frontier model release.
 
 ## License
 

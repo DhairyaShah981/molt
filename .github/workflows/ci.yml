@@ -17,7 +17,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Unit tests
-        run: python tests/test_molt.py
+        run: |
+          for f in tests/test_*.py; do python "$f"; done
       - name: Evals (labeled fixtures, must be 100%)
         run: python evals/run_evals.py
       - name: CLI smoke test

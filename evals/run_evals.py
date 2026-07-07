@@ -17,11 +17,47 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from molt.diffcmd import diff_reports  # noqa: E402
 from molt.evidence import audit  # noqa: E402
+from molt.report import to_json  # noqa: E402
 from molt.rules import parse_all  # noqa: E402
-from molt.transcripts import load_project  # noqa: E402
+from molt.transcripts import load_project, load_session  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Capability-diff contract: era-old = sessions s1+s2, era-new = s3.
+# Every expected transition is hand-derived from the fixtures.
+EXPECTED_TRANSITIONS = {
+    ("pip install", "IGNORED", "DEAD"),
+    ("pytest -q", "LOAD_BEARING", "DEAD"),
+    ("instead of `grep`", "LOAD_BEARING", "DEAD"),
+    ("docker compose", "DEAD", "IGNORED"),
+    ("CHANGELOG.md", "IGNORED", "LOAD_BEARING"),
+}
+EXPECTED_UNCHANGED = 2  # netlify + .env stay DEAD in both eras
+
+
+def eval_diff() -> int:
+    rules = parse_all([FIXTURES / "CLAUDE.md"])
+    old_sessions = [load_session(FIXTURES / "transcripts" / f) for f in ("s1.jsonl", "s2.jsonl")]
+    new_sessions = [load_session(FIXTURES / "transcripts" / "s3.jsonl")]
+    old = json.loads(to_json(audit(rules, old_sessions), len(old_sessions)))
+    new = json.loads(to_json(audit(rules, new_sessions), len(new_sessions)))
+    d = diff_reports(old, new)
+
+    failed = 0
+    got = {(t["from"], t["to"], t["text"]) for t in d["transitions"]}
+    for key, frm, to in EXPECTED_TRANSITIONS:
+        hit = any(key in text and (f, t) == (frm, to) for f, t, text in got)
+        print(f"  {'✓' if hit else '✗'} diff: {key!r} {frm} → {to}")
+        failed += not hit
+    if len(d["transitions"]) != len(EXPECTED_TRANSITIONS):
+        print(f"  ✗ diff: expected {len(EXPECTED_TRANSITIONS)} transitions, got {len(d['transitions'])}")
+        failed += 1
+    if d["unchanged"] != EXPECTED_UNCHANGED:
+        print(f"  ✗ diff: expected {EXPECTED_UNCHANGED} unchanged, got {d['unchanged']}")
+        failed += 1
+    return failed
 
 
 def main() -> int:
@@ -56,8 +92,11 @@ def main() -> int:
         print(f"  ✗ label never matched any parsed rule: {key!r}")
         failed += 1
 
+    print()
+    failed += eval_diff()
+
     total = passed + failed
-    print(f"\n{passed}/{total} verdicts correct")
+    print(f"\nclassifier: {passed}/{total} · diff contract: {'PASS' if failed == 0 else 'FAIL'}")
     return 0 if failed == 0 else 1
 
 
