@@ -98,9 +98,17 @@ molt prune --pr           # apply on a new branch and open a PR carrying the evi
 molt prune --include-ignored   # also prune IGNORED rules (default: DEAD only)
 ```
 
-Only DEAD rules are pruned by default. IGNORED rules need the explicit flag —
-sometimes an ignored rule should be *enforced*, not deleted. LOAD_BEARING and
-UNCERTAIN are never touched.
+Only DEAD rules are pruned by default. IGNORED rules need `--include-ignored` —
+and even then, a *violated prohibition* (an IGNORED "never do X") is never pruned:
+that's a guardrail being breached, so it should be enforced, not deleted.
+LOAD_BEARING and UNCERTAIN are never touched.
+
+Guardrails: `--apply` edits in place but writes a `.bak` of each original first
+(`mv f.bak f` to undo). Pruning the global `~/.claude/CLAUDE.md` is refused
+unless `--all-projects` is set — its rules apply everywhere, so one project's
+transcripts aren't enough evidence to delete them. `--pr` refuses a dirty
+working tree, checks `gh` is installed and each git step succeeded before
+pushing, and puts you back on your original branch if anything fails.
 
 ## How verdicts work
 

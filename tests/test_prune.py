@@ -35,6 +35,17 @@ def test_select_prunable_filters_verdicts():
     assert [e.rule.text for e in select_prunable(evs, include_ignored=True)] == ["a", "b"]
 
 
+def test_select_prunable_keeps_violated_prohibitions():
+    # an IGNORED prohibition = the agent did the forbidden thing = a guardrail
+    # being breached. Never prune it, even with --include-ignored.
+    mandate = _ev(IGNORED, "always run tests")
+    mandate.rule.polarity = "mandate"
+    prohib = _ev(IGNORED, "never push to main")
+    prohib.rule.polarity = "prohibition"
+    got = [e.rule.text for e in select_prunable([mandate, prohib], include_ignored=True)]
+    assert got == ["always run tests"]  # prohibition excluded
+
+
 def test_prune_texts_bottom_up_multiple_rules_same_file():
     text = "# H\n\n- rule one\n- rule two\n- rule three\n"
     rules = [
@@ -97,6 +108,33 @@ def test_cli_prune_dry_run_and_apply():
             rc = main(["prune", str(scaffold), "--transcripts", transcripts])
         assert rc == 0
         assert "nothing to prune" in (buf.getvalue() + err.getvalue()).lower()
+
+
+def test_cli_prune_refuses_global_without_all_projects():
+    import io
+    from contextlib import redirect_stderr, redirect_stdout
+
+    from molt.cli import main
+
+    global_md = Path.home() / ".claude" / "CLAUDE.md"
+    if not global_md.is_file():
+        return  # nothing to assert on this machine
+    err = io.StringIO()
+    with redirect_stdout(io.StringIO()), redirect_stderr(err):
+        rc = main(["prune", str(global_md), "--apply"])
+    assert rc == 1 and "global ~/.claude/CLAUDE.md" in err.getvalue()
+
+
+def test_atomic_write_roundtrip_and_no_temp_left():
+    from molt.cli import _atomic_write
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp, "CLAUDE.md")
+        target.write_text("original\n")
+        _atomic_write(target, "replaced\n")
+        assert target.read_text() == "replaced\n"
+        # no .molt-*.tmp litter left behind
+        assert not list(Path(tmp).glob(".molt-*"))
 
 
 if __name__ == "__main__":

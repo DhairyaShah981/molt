@@ -20,6 +20,17 @@
 - Session loading is shared between `audit` and `prune` (same discovery,
   hints, and era-slice behavior).
 
+### Hardened (pre-ship adversarial review findings)
+- `molt prune` refuses the global `~/.claude/CLAUDE.md` unless `--all-projects`
+  is set — pruning it on one project's evidence would delete rules that are
+  load-bearing in other projects that were never audited.
+- File edits are atomic (temp file + `os.replace`) so a crash mid-write can't
+  leave a scaffold file truncated.
+- `molt prune --pr` checks every precondition (single repo, `gh` installed,
+  clean worktree) before any mutation, checks each git step's return code, and
+  restores your original branch if `add`/`commit` fails — no more pushing a
+  branch that lacks the prune commit or stranding you on a temp branch.
+
 ## 0.2.0 — 2026-07-08
 
 ### Added

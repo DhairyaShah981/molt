@@ -22,8 +22,17 @@ from .rules import Rule
 
 
 def select_prunable(evidences: list[Evidence], include_ignored: bool = False) -> list[Evidence]:
-    wanted = {DEAD, IGNORED} if include_ignored else {DEAD}
-    return [e for e in evidences if e.verdict in wanted]
+    """DEAD rules are always prunable. IGNORED rules are prunable only with
+    include_ignored AND only when they are mandates — an IGNORED *prohibition*
+    means the agent did the forbidden thing, i.e. a guardrail being breached.
+    That rule should be enforced, not deleted, so it is never pruned."""
+    out = []
+    for e in evidences:
+        if e.verdict == DEAD:
+            out.append(e)
+        elif e.verdict == IGNORED and include_ignored and e.rule.polarity != "prohibition":
+            out.append(e)
+    return out
 
 
 def prune_texts(rules_by_file: "dict[str, list[Rule]]", texts: "dict[str, str]") -> "dict[str, str]":

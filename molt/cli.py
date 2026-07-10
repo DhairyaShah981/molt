@@ -246,6 +246,20 @@ def cmd_prune(args: argparse.Namespace) -> int:
     if not paths:
         print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
         return 1
+    # DESTRUCTIVE-path guard: pruning the global ~/.claude/CLAUDE.md on evidence
+    # from a single project would delete rules that are load-bearing in OTHER
+    # projects whose transcripts were never looked at. Require --all-projects so
+    # the evidence base actually spans everywhere the rule could matter.
+    global_md = (Path.home() / ".claude" / "CLAUDE.md").resolve()
+    if any(p.resolve() == global_md for p in paths) and not args.all_projects:
+        print(
+            "refusing to prune the global ~/.claude/CLAUDE.md on single-project evidence:\n"
+            "its rules apply in every project, but this run only audited one. A rule that\n"
+            "looks DEAD here may be load-bearing elsewhere. Re-run with --all-projects to\n"
+            "audit across every project, or point prune at a project-level CLAUDE.md.",
+            file=sys.stderr,
+        )
+        return 1
     rules = parse_all(paths)
     if not rules:
         print("no rules parsed from input files", file=sys.stderr)
@@ -274,20 +288,54 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
     if args.pr:
         return _prune_pr(by_file, new_texts, report)
+    # --apply edits in place; leave a .bak of each original so a bad prune
+    # (verdicts are an observational lower bound) is one `mv` from undone
     for f, text in new_texts.items():
-        Path(f).write_text(text)
+        Path(f + ".bak").write_text(texts[f])
+        _atomic_write(Path(f), text)
     print(report)
+    print(f"\n{len(by_file)} file(s) edited. Originals saved as *.bak — `mv f.bak f` to undo.")
     return 0
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via temp file + os.replace so a crash mid-write never leaves a
+    scaffold file truncated. Same-dir temp keeps the replace atomic."""
+    import os
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".molt-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _prune_pr(by_file: "dict[str, list]", new_texts: "dict[str, str]", report: str) -> int:
-    """Branch + commit + PR carrying the evidence. All files must share one repo."""
+    """Branch + commit + PR carrying the evidence.
+
+    Every precondition (single repo, `gh` present, clean worktree) is checked
+    BEFORE any mutation, and every git step's return code is checked so we
+    never push or open a PR from a branch that lacks the prune commit. On any
+    post-switch failure we restore the user's original branch."""
+    import shutil
     import subprocess
     import tempfile
 
     def git(*cmd: str, **kw):
         return subprocess.run(["git", "-C", repo, *cmd], capture_output=True, text=True, **kw)
 
+    # --- preconditions, all before we touch anything ---
+    if not shutil.which("gh"):
+        print("`gh` CLI not found on PATH — install it or use --apply and open the PR yourself",
+              file=sys.stderr)
+        return 1
     roots = set()
     for f in by_file:
         r = subprocess.run(["git", "-C", str(Path(f).parent), "rev-parse", "--show-toplevel"],
@@ -301,31 +349,54 @@ def _prune_pr(by_file: "dict[str, list]", new_texts: "dict[str, str]", report: s
         return 1
     repo = roots.pop()
 
+    if git("status", "--porcelain").stdout.strip():
+        print(
+            "working tree is dirty — commit or stash your changes first so the prune PR\n"
+            "contains only molt's deletions, not your unrelated edits.",
+            file=sys.stderr,
+        )
+        return 1
     base = git("branch", "--show-current").stdout.strip() or "main"
     n = 1
     while git("rev-parse", "--verify", f"molt/prune-{n}").returncode == 0:
         n += 1
     branch = f"molt/prune-{n}"
+
+    def restore(msg: str) -> int:
+        git("switch", base)
+        print(msg, file=sys.stderr)
+        return 1
+
+    # --- mutations, each checked; restore original branch on any failure ---
     if git("switch", "-c", branch).returncode != 0:
-        print("could not create branch — commit or stash your changes first", file=sys.stderr)
+        print(f"could not create branch {branch}", file=sys.stderr)
         return 1
     for f, text in new_texts.items():
-        Path(f).write_text(text)
-    git("add", *by_file.keys())
-    git("commit", "-m", f"chore: molt prune — delete {len(sum(by_file.values(), []))} dead rules")
+        _atomic_write(Path(f), text)
+    if git("add", *by_file.keys()).returncode != 0:
+        return restore(f"git add failed; restored branch {base} (changes still on disk)")
+    n_rules = len(sum(by_file.values(), []))
+    # pathspec-scoped commit: even though the clean-tree gate means the index
+    # holds only our files, scoping guarantees no stray staged work is captured
+    if git("commit", "-m", f"chore: molt prune — delete {n_rules} dead rules",
+           "--", *by_file.keys()).returncode != 0:
+        return restore(f"git commit failed (hook? identity? empty diff?); restored branch {base}")
     if git("push", "-u", "origin", branch).returncode != 0:
-        print(f"pushed nothing — no origin remote? Changes committed locally on {branch}.",
+        print(f"push failed — no origin remote? Prune commit is on local branch {branch}.",
               file=sys.stderr)
         print(report)
         return 1
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
         fh.write(report)
         body_file = fh.name
-    pr = subprocess.run(
-        ["gh", "pr", "create", "--base", base, "--title", "chore: molt prune — delete dead scaffold rules",
-         "--body-file", body_file], cwd=repo, capture_output=True, text=True,
-    )
-    Path(body_file).unlink()
+    try:
+        pr = subprocess.run(
+            ["gh", "pr", "create", "--base", base,
+             "--title", "chore: molt prune — delete dead scaffold rules",
+             "--body-file", body_file], cwd=repo, capture_output=True, text=True,
+        )
+    finally:
+        Path(body_file).unlink()
     if pr.returncode != 0:
         print(f"branch {branch} pushed, but PR creation failed:\n{pr.stderr}", file=sys.stderr)
         return 1
