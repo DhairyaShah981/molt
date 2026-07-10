@@ -27,11 +27,17 @@ But everyone prunes by vibes. molt replaces vibes with receipts:
 ## Install
 
 ```bash
+pip install molt-audit
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/DhairyaShah981/molt && cd molt
 pip install -e .
 ```
 
-Python 3.9+, stdlib only. No dependencies.
+Python 3.9+, stdlib only. No dependencies. The command is `molt`.
 
 ## Use
 
