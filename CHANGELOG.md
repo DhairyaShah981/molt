@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0 — 2026-07-08
+
+### Added
+- `molt prune` (v4): act on the audit. Dry run by default (evidence table of
+  what would be deleted and why), `--apply` edits the files, `--pr` applies on
+  a fresh branch and opens a pull request whose body carries the receipts.
+  Prunes DEAD rules only unless `--include-ignored`; LOAD_BEARING and
+  UNCERTAIN are never touched. Multi-rule deletion is bottom-up per file so
+  line ranges stay valid, and wrapped (multi-line) rules are removed whole.
+- Public capability diffs (v5): `docs/capability-diffs/` — how-to, honesty
+  rules (era confounds, sample sizes, observational-not-causal), a publishable
+  template, and a first worked example generated from the author's own 593
+  sessions. Community diffs accepted by PR.
+- Prune contract in the eval harness: on the fixtures, exactly the two
+  ground-truth DEAD rules are prunable and survivors stay intact.
+
+### Changed
+- Session loading is shared between `audit` and `prune` (same discovery,
+  hints, and era-slice behavior).
+
+### Hardened (pre-ship adversarial review findings)
+- `molt prune` refuses the global `~/.claude/CLAUDE.md` unless `--all-projects`
+  is set — pruning it on one project's evidence would delete rules that are
+  load-bearing in other projects that were never audited.
+- File edits are atomic (temp file + `os.replace`) so a crash mid-write can't
+  leave a scaffold file truncated.
+- `molt prune --pr` checks every precondition (single repo, `gh` installed,
+  clean worktree) before any mutation, checks each git step's return code, and
+  restores your original branch if `add`/`commit` fails — no more pushing a
+  branch that lacks the prune commit or stranding you on a temp branch.
+
 ## 0.2.0 — 2026-07-08
 
 ### Added

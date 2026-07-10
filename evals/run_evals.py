@@ -60,6 +60,32 @@ def eval_diff() -> int:
     return failed
 
 
+def eval_prune() -> int:
+    """Prune contract: on the fixtures, exactly the two DEAD rules (netlify,
+    .env) are prunable, and pruning removes their lines while keeping the rest."""
+    from molt.prune import prune_texts, select_prunable
+
+    rules = parse_all([FIXTURES / "CLAUDE.md"])
+    sessions = load_project(FIXTURES / "transcripts", limit=0)
+    prunable = select_prunable(audit(rules, sessions))
+    texts = {e.rule.file: Path(e.rule.file).read_text() for e in prunable}
+    by_file: dict = {}
+    for e in prunable:
+        by_file.setdefault(e.rule.file, []).append(e.rule)
+    pruned = prune_texts(by_file, texts) if prunable else {}
+
+    failed = 0
+    got = sorted(e.rule.text for e in prunable)
+    ok = len(got) == 2 and "netlify" in got[0] + got[1] and ".env" in got[0] + got[1]
+    print(f"  {'✓' if ok else '✗'} prune: exactly netlify + .env prunable (got {len(got)})")
+    failed += not ok
+    for text in pruned.values():
+        survivors_ok = "pytest -q" in text and "netlify" not in text and ".env" not in text
+        print(f"  {'✓' if survivors_ok else '✗'} prune: DEAD lines removed, survivors intact")
+        failed += not survivors_ok
+    return failed
+
+
 def main() -> int:
     labels: dict[str, str] = {
         k: v for k, v in json.loads((Path(__file__).parent / "labels.json").read_text()).items()
@@ -94,12 +120,15 @@ def main() -> int:
 
     print()
     diff_failed = eval_diff()
+    print()
+    prune_failed = eval_prune()
 
     total = passed + failed
     print(
         f"\nclassifier: {passed}/{total} · diff contract: {'PASS' if diff_failed == 0 else 'FAIL'}"
+        f" · prune contract: {'PASS' if prune_failed == 0 else 'FAIL'}"
     )
-    return 0 if failed == 0 and diff_failed == 0 else 1
+    return 0 if failed == 0 and diff_failed == 0 and prune_failed == 0 else 1
 
 
 if __name__ == "__main__":

@@ -59,20 +59,9 @@ def _valid_iso(value: str, flag: str) -> bool:
         return False
 
 
-def cmd_audit(args: argparse.Namespace) -> int:
-    paths = [Path(p) for p in args.files] or default_claude_mds()
-    if not paths:
-        print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
-        return 1
-    since, until = args.since or "", args.until or ""
-    for value, flag in ((since, "--since"), (until, "--until")):
-        if value and not _valid_iso(value, flag):
-            return 1
-    rules = parse_all(paths)
-    if not rules:
-        print("no rules parsed from input files", file=sys.stderr)
-        return 1
-
+def _load_sessions(args: argparse.Namespace, since: str = "", until: str = ""):
+    """Shared session loading for audit and prune. Returns None (after printing
+    an error) when no usable sessions exist."""
     # date bounds disable the load limit — limiting first would sample only the
     # newest sessions and silently starve the older era out of a capability diff
     load_limit = 0 if (since or until) else args.limit
@@ -91,7 +80,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
             f"--all-projects / --transcripts DIR",
             file=sys.stderr,
         )
-        return 1
+        return None
     if since or until:
         undated = sum(1 for s in sessions if not s.started)
         sessions = filter_by_date(sessions, since=since, until=until)
@@ -102,6 +91,25 @@ def cmd_audit(args: argparse.Namespace) -> int:
             sessions = sessions[: args.limit]
     if not sessions:
         print("no sessions left after --since/--until filtering", file=sys.stderr)
+        return None
+    return sessions
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    paths = [Path(p) for p in args.files] or default_claude_mds()
+    if not paths:
+        print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
+        return 1
+    since, until = args.since or "", args.until or ""
+    for value, flag in ((since, "--since"), (until, "--until")):
+        if value and not _valid_iso(value, flag):
+            return 1
+    rules = parse_all(paths)
+    if not rules:
+        print("no rules parsed from input files", file=sys.stderr)
+        return 1
+    sessions = _load_sessions(args, since, until)
+    if sessions is None:
         return 1
 
     evidences = run_audit(rules, sessions)
@@ -231,6 +239,172 @@ def cmd_ablate(args: argparse.Namespace) -> int:
     return _emit(render_ablation(results), args.out)
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    from .prune import prune_texts, render_prune, select_prunable
+
+    paths = [Path(p) for p in args.files] or default_claude_mds()
+    if not paths:
+        print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
+        return 1
+    # DESTRUCTIVE-path guard: pruning the global ~/.claude/CLAUDE.md on evidence
+    # from a single project would delete rules that are load-bearing in OTHER
+    # projects whose transcripts were never looked at. Require --all-projects so
+    # the evidence base actually spans everywhere the rule could matter.
+    global_md = (Path.home() / ".claude" / "CLAUDE.md").resolve()
+    if any(p.resolve() == global_md for p in paths) and not args.all_projects:
+        print(
+            "refusing to prune the global ~/.claude/CLAUDE.md on single-project evidence:\n"
+            "its rules apply in every project, but this run only audited one. A rule that\n"
+            "looks DEAD here may be load-bearing elsewhere. Re-run with --all-projects to\n"
+            "audit across every project, or point prune at a project-level CLAUDE.md.",
+            file=sys.stderr,
+        )
+        return 1
+    rules = parse_all(paths)
+    if not rules:
+        print("no rules parsed from input files", file=sys.stderr)
+        return 1
+    sessions = _load_sessions(args)
+    if sessions is None:
+        return 1
+    evidences = run_audit(rules, sessions)
+    prunable = select_prunable(evidences, include_ignored=args.include_ignored)
+    if not prunable:
+        print("nothing to prune — every rule shows evidence of life in the audited sessions")
+        return 0
+
+    applying = args.apply or args.pr
+    report = render_prune(prunable, len(sessions), applied=applying)
+    if not applying:
+        print(report)
+        print("\nDry run — re-run with --apply to delete these rules, or --pr to open a pull request.")
+        return 0
+
+    by_file: dict[str, list] = {}
+    for e in prunable:
+        by_file.setdefault(e.rule.file, []).append(e.rule)
+    texts = {f: Path(f).read_text() for f in by_file}
+    new_texts = prune_texts(by_file, texts)
+
+    if args.pr:
+        return _prune_pr(by_file, new_texts, report)
+    # --apply edits in place; leave a .bak of each original so a bad prune
+    # (verdicts are an observational lower bound) is one `mv` from undone
+    for f, text in new_texts.items():
+        Path(f + ".bak").write_text(texts[f])
+        _atomic_write(Path(f), text)
+    print(report)
+    print(f"\n{len(by_file)} file(s) edited. Originals saved as *.bak — `mv f.bak f` to undo.")
+    return 0
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via temp file + os.replace so a crash mid-write never leaves a
+    scaffold file truncated. Same-dir temp keeps the replace atomic."""
+    import os
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".molt-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _prune_pr(by_file: "dict[str, list]", new_texts: "dict[str, str]", report: str) -> int:
+    """Branch + commit + PR carrying the evidence.
+
+    Every precondition (single repo, `gh` present, clean worktree) is checked
+    BEFORE any mutation, and every git step's return code is checked so we
+    never push or open a PR from a branch that lacks the prune commit. On any
+    post-switch failure we restore the user's original branch."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    def git(*cmd: str, **kw):
+        return subprocess.run(["git", "-C", repo, *cmd], capture_output=True, text=True, **kw)
+
+    # --- preconditions, all before we touch anything ---
+    if not shutil.which("gh"):
+        print("`gh` CLI not found on PATH — install it or use --apply and open the PR yourself",
+              file=sys.stderr)
+        return 1
+    roots = set()
+    for f in by_file:
+        r = subprocess.run(["git", "-C", str(Path(f).parent), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"{f} is not inside a git repository — use --apply instead", file=sys.stderr)
+            return 1
+        roots.add(r.stdout.strip())
+    if len(roots) > 1:
+        print(f"pruned files span multiple repos ({roots}) — use --apply instead", file=sys.stderr)
+        return 1
+    repo = roots.pop()
+
+    if git("status", "--porcelain").stdout.strip():
+        print(
+            "working tree is dirty — commit or stash your changes first so the prune PR\n"
+            "contains only molt's deletions, not your unrelated edits.",
+            file=sys.stderr,
+        )
+        return 1
+    base = git("branch", "--show-current").stdout.strip() or "main"
+    n = 1
+    while git("rev-parse", "--verify", f"molt/prune-{n}").returncode == 0:
+        n += 1
+    branch = f"molt/prune-{n}"
+
+    def restore(msg: str) -> int:
+        git("switch", base)
+        print(msg, file=sys.stderr)
+        return 1
+
+    # --- mutations, each checked; restore original branch on any failure ---
+    if git("switch", "-c", branch).returncode != 0:
+        print(f"could not create branch {branch}", file=sys.stderr)
+        return 1
+    for f, text in new_texts.items():
+        _atomic_write(Path(f), text)
+    if git("add", *by_file.keys()).returncode != 0:
+        return restore(f"git add failed; restored branch {base} (changes still on disk)")
+    n_rules = len(sum(by_file.values(), []))
+    # pathspec-scoped commit: even though the clean-tree gate means the index
+    # holds only our files, scoping guarantees no stray staged work is captured
+    if git("commit", "-m", f"chore: molt prune — delete {n_rules} dead rules",
+           "--", *by_file.keys()).returncode != 0:
+        return restore(f"git commit failed (hook? identity? empty diff?); restored branch {base}")
+    if git("push", "-u", "origin", branch).returncode != 0:
+        print(f"push failed — no origin remote? Prune commit is on local branch {branch}.",
+              file=sys.stderr)
+        print(report)
+        return 1
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(report)
+        body_file = fh.name
+    try:
+        pr = subprocess.run(
+            ["gh", "pr", "create", "--base", base,
+             "--title", "chore: molt prune — delete dead scaffold rules",
+             "--body-file", body_file], cwd=repo, capture_output=True, text=True,
+        )
+    finally:
+        Path(body_file).unlink()
+    if pr.returncode != 0:
+        print(f"branch {branch} pushed, but PR creation failed:\n{pr.stderr}", file=sys.stderr)
+        return 1
+    print(pr.stdout.strip())
+    print(report)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="molt", description="scaffold-debt auditor for agent instruction files")
     ap.add_argument("--version", action="version", version=f"molt {__version__}")
@@ -251,6 +425,17 @@ def main(argv: list[str] | None = None) -> int:
     p_audit.add_argument("--until", help="only sessions started before this ISO date")
     p_audit.add_argument("--out", help="write report to file instead of stdout")
     p_audit.set_defaults(fn=cmd_audit)
+
+    p_prune = sub.add_parser("prune", help="delete DEAD rules from scaffold files, with evidence")
+    p_prune.add_argument("files", nargs="*", help="CLAUDE.md-style files (default: auto-discover)")
+    p_prune.add_argument("--transcripts", help="transcripts dir (default: ~/.claude/projects, current project)")
+    p_prune.add_argument("--all-projects", action="store_true", help="audit across every project's transcripts")
+    p_prune.add_argument("--limit", type=int, default=200, help="max sessions to load (default 200, 0=all)")
+    p_prune.add_argument("--include-ignored", action="store_true",
+                         help="also prune IGNORED rules (default: DEAD only)")
+    p_prune.add_argument("--apply", action="store_true", help="edit the files (default: dry run)")
+    p_prune.add_argument("--pr", action="store_true", help="apply on a new branch and open a PR with the evidence")
+    p_prune.set_defaults(fn=cmd_prune)
 
     p_diff = sub.add_parser("diff", help="capability diff between two `audit --json` reports")
     p_diff.add_argument("old", help="old-era report JSON")
