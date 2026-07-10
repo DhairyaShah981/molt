@@ -59,20 +59,9 @@ def _valid_iso(value: str, flag: str) -> bool:
         return False
 
 
-def cmd_audit(args: argparse.Namespace) -> int:
-    paths = [Path(p) for p in args.files] or default_claude_mds()
-    if not paths:
-        print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
-        return 1
-    since, until = args.since or "", args.until or ""
-    for value, flag in ((since, "--since"), (until, "--until")):
-        if value and not _valid_iso(value, flag):
-            return 1
-    rules = parse_all(paths)
-    if not rules:
-        print("no rules parsed from input files", file=sys.stderr)
-        return 1
-
+def _load_sessions(args: argparse.Namespace, since: str = "", until: str = ""):
+    """Shared session loading for audit and prune. Returns None (after printing
+    an error) when no usable sessions exist."""
     # date bounds disable the load limit — limiting first would sample only the
     # newest sessions and silently starve the older era out of a capability diff
     load_limit = 0 if (since or until) else args.limit
@@ -91,7 +80,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
             f"--all-projects / --transcripts DIR",
             file=sys.stderr,
         )
-        return 1
+        return None
     if since or until:
         undated = sum(1 for s in sessions if not s.started)
         sessions = filter_by_date(sessions, since=since, until=until)
@@ -102,6 +91,25 @@ def cmd_audit(args: argparse.Namespace) -> int:
             sessions = sessions[: args.limit]
     if not sessions:
         print("no sessions left after --since/--until filtering", file=sys.stderr)
+        return None
+    return sessions
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    paths = [Path(p) for p in args.files] or default_claude_mds()
+    if not paths:
+        print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
+        return 1
+    since, until = args.since or "", args.until or ""
+    for value, flag in ((since, "--since"), (until, "--until")):
+        if value and not _valid_iso(value, flag):
+            return 1
+    rules = parse_all(paths)
+    if not rules:
+        print("no rules parsed from input files", file=sys.stderr)
+        return 1
+    sessions = _load_sessions(args, since, until)
+    if sessions is None:
         return 1
 
     evidences = run_audit(rules, sessions)
@@ -231,6 +239,101 @@ def cmd_ablate(args: argparse.Namespace) -> int:
     return _emit(render_ablation(results), args.out)
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    from .prune import prune_texts, render_prune, select_prunable
+
+    paths = [Path(p) for p in args.files] or default_claude_mds()
+    if not paths:
+        print("no CLAUDE.md found; pass paths explicitly", file=sys.stderr)
+        return 1
+    rules = parse_all(paths)
+    if not rules:
+        print("no rules parsed from input files", file=sys.stderr)
+        return 1
+    sessions = _load_sessions(args)
+    if sessions is None:
+        return 1
+    evidences = run_audit(rules, sessions)
+    prunable = select_prunable(evidences, include_ignored=args.include_ignored)
+    if not prunable:
+        print("nothing to prune — every rule shows evidence of life in the audited sessions")
+        return 0
+
+    applying = args.apply or args.pr
+    report = render_prune(prunable, len(sessions), applied=applying)
+    if not applying:
+        print(report)
+        print("\nDry run — re-run with --apply to delete these rules, or --pr to open a pull request.")
+        return 0
+
+    by_file: dict[str, list] = {}
+    for e in prunable:
+        by_file.setdefault(e.rule.file, []).append(e.rule)
+    texts = {f: Path(f).read_text() for f in by_file}
+    new_texts = prune_texts(by_file, texts)
+
+    if args.pr:
+        return _prune_pr(by_file, new_texts, report)
+    for f, text in new_texts.items():
+        Path(f).write_text(text)
+    print(report)
+    return 0
+
+
+def _prune_pr(by_file: "dict[str, list]", new_texts: "dict[str, str]", report: str) -> int:
+    """Branch + commit + PR carrying the evidence. All files must share one repo."""
+    import subprocess
+    import tempfile
+
+    def git(*cmd: str, **kw):
+        return subprocess.run(["git", "-C", repo, *cmd], capture_output=True, text=True, **kw)
+
+    roots = set()
+    for f in by_file:
+        r = subprocess.run(["git", "-C", str(Path(f).parent), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"{f} is not inside a git repository — use --apply instead", file=sys.stderr)
+            return 1
+        roots.add(r.stdout.strip())
+    if len(roots) > 1:
+        print(f"pruned files span multiple repos ({roots}) — use --apply instead", file=sys.stderr)
+        return 1
+    repo = roots.pop()
+
+    base = git("branch", "--show-current").stdout.strip() or "main"
+    n = 1
+    while git("rev-parse", "--verify", f"molt/prune-{n}").returncode == 0:
+        n += 1
+    branch = f"molt/prune-{n}"
+    if git("switch", "-c", branch).returncode != 0:
+        print("could not create branch — commit or stash your changes first", file=sys.stderr)
+        return 1
+    for f, text in new_texts.items():
+        Path(f).write_text(text)
+    git("add", *by_file.keys())
+    git("commit", "-m", f"chore: molt prune — delete {len(sum(by_file.values(), []))} dead rules")
+    if git("push", "-u", "origin", branch).returncode != 0:
+        print(f"pushed nothing — no origin remote? Changes committed locally on {branch}.",
+              file=sys.stderr)
+        print(report)
+        return 1
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(report)
+        body_file = fh.name
+    pr = subprocess.run(
+        ["gh", "pr", "create", "--base", base, "--title", "chore: molt prune — delete dead scaffold rules",
+         "--body-file", body_file], cwd=repo, capture_output=True, text=True,
+    )
+    Path(body_file).unlink()
+    if pr.returncode != 0:
+        print(f"branch {branch} pushed, but PR creation failed:\n{pr.stderr}", file=sys.stderr)
+        return 1
+    print(pr.stdout.strip())
+    print(report)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="molt", description="scaffold-debt auditor for agent instruction files")
     ap.add_argument("--version", action="version", version=f"molt {__version__}")
@@ -251,6 +354,17 @@ def main(argv: list[str] | None = None) -> int:
     p_audit.add_argument("--until", help="only sessions started before this ISO date")
     p_audit.add_argument("--out", help="write report to file instead of stdout")
     p_audit.set_defaults(fn=cmd_audit)
+
+    p_prune = sub.add_parser("prune", help="delete DEAD rules from scaffold files, with evidence")
+    p_prune.add_argument("files", nargs="*", help="CLAUDE.md-style files (default: auto-discover)")
+    p_prune.add_argument("--transcripts", help="transcripts dir (default: ~/.claude/projects, current project)")
+    p_prune.add_argument("--all-projects", action="store_true", help="audit across every project's transcripts")
+    p_prune.add_argument("--limit", type=int, default=200, help="max sessions to load (default 200, 0=all)")
+    p_prune.add_argument("--include-ignored", action="store_true",
+                         help="also prune IGNORED rules (default: DEAD only)")
+    p_prune.add_argument("--apply", action="store_true", help="edit the files (default: dry run)")
+    p_prune.add_argument("--pr", action="store_true", help="apply on a new branch and open a PR with the evidence")
+    p_prune.set_defaults(fn=cmd_prune)
 
     p_diff = sub.add_parser("diff", help="capability diff between two `audit --json` reports")
     p_diff.add_argument("old", help="old-era report JSON")
