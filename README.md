@@ -83,6 +83,25 @@ molt audit --since 2026-06-01 --json --out new.json   # era: after
 molt diff old.json new.json
 ```
 
+Publishing your diff is the point — see [docs/capability-diffs](docs/capability-diffs/README.md)
+for the how-to, honesty rules, and template. PRs welcome.
+
+### Auto-prune (v4)
+
+Act on the audit. `molt prune` deletes rules the evidence condemns — dry run by
+default, receipts always:
+
+```bash
+molt prune                # dry run: what would be deleted, with evidence
+molt prune --apply        # edit the files
+molt prune --pr           # apply on a new branch and open a PR carrying the evidence
+molt prune --include-ignored   # also prune IGNORED rules (default: DEAD only)
+```
+
+Only DEAD rules are pruned by default. IGNORED rules need the explicit flag —
+sometimes an ignored rule should be *enforced*, not deleted. LOAD_BEARING and
+UNCERTAIN are never touched.
+
 ## How verdicts work
 
 Each rule gets signals (backticked commands/tools beat prose keywords) and is matched — word-boundary safe — against three surfaces per session: user text, assistant text, and *actions* (bash commands + tool calls).
@@ -117,8 +136,9 @@ CI runs both on every push. If you find a transcript pattern molt misclassifies,
 
 - ~~v2 — targeted ablation~~ shipped (`molt ablate`)
 - ~~v3 — capability diff~~ shipped (`molt audit --json` + `molt diff`)
-- **v4 — auto-prune PRs:** `molt prune` opens a PR deleting DEAD rules with the evidence in the PR body.
-- **v5 — public capability diffs:** community-run diffs published on each frontier model release.
+- ~~v4 — auto-prune PRs~~ shipped (`molt prune --pr`)
+- ~~v5 — public capability diffs~~ shipped ([docs/capability-diffs](docs/capability-diffs/README.md) — send yours)
+- **v6 — PyPI release** (`pip install molt-audit`) once the community diff loop proves out.
 
 ## License
 
