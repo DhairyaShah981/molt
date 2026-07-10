@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 — 2026-07-10
+
+### Added
+- **`pip install molt-audit`** — molt is now a published package. The `molt`
+  command installs on Python 3.9+ with zero dependencies.
+- Automated PyPI release via GitHub Actions trusted publishing (OIDC, no stored
+  token): publishing a GitHub Release verifies the tag matches
+  `molt.__version__`, runs the full test + eval suite, builds, and uploads.
+  See `docs/RELEASING.md`.
+
+### Changed
+- Packaging metadata filled out (classifiers, project URLs) for the PyPI page.
+
 ## 0.3.0 — 2026-07-08
 
 ### Added
